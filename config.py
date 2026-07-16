@@ -1,17 +1,19 @@
-import os 
+import os ,yaml
 from dotenv import load_dotenv
 
 load_dotenv()
+with open("config.yaml", "r", encoding="utf-8") as f:
+     yaml_config = yaml.safe_load(f)
+default = yaml_config["default_provider"]          
+provider = yaml_config["providers"][default] 
+API_KEY = os.getenv(provider["api_key_env"])        
+if not API_KEY:
+      raise ValueError(f"请在 .env 中设置 {provider['api_key_env']}")
+Base_URL = provider["base_url"]
+Model    = provider["default_model"]
+
 def get_config():
-    if not os.path.exists(".env"):
-        raise FileNotFoundError("请重命名 .env.example 为 .env 并填入 API Key")
-    else:
-        API_KEY = os.getenv("API_KEY")
-        Base_URL = os.getenv("Base_URL")
-        Model = os.getenv("Model")
-        if not API_KEY or not Base_URL or not Model:
-            raise ValueError("请在 .env 文件中填写 API Key、Base URL 和 Model")
-        return{"API_KEY": API_KEY, "Base_URL": Base_URL, "Model": Model}
+    return{"API_KEY": API_KEY, "Base_URL": Base_URL, "Model": Model,"provider_name": default,}
 
 if __name__ == "__main__":
     config = get_config()
