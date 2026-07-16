@@ -55,11 +55,15 @@ def handle_command(cmd):
 if __name__ == "__main__":
     agent = Agent(client, config, persona)
     while True:
-        print_separator()
-        cin = input("> ")
-        if cin.startswith("/"):
-            result = handle_command(cin)   # 命令单独处理
-            if result == "exit":
-                break
-            continue
-        agent.chat(cin)
+        try:
+            print_separator()
+            cin = input("> ")
+            if cin.startswith("/"):
+                result = handle_command(cin)   # 命令单独处理
+                if result == "exit":
+                    break
+                continue
+            agent.chat(cin)
+        except KeyboardInterrupt:
+            print("\n已中断任务，输入 /exit 退出程序")
+            
