@@ -1,6 +1,6 @@
 from config import get_config
 import shutil , os
-from openai import OpenAI
+from openai import OpenAI 
 from agent import Agent , MAX_TOKENS
 from persona import load_persona, list_personas
 from config import switch_provider , list_providers ,  switch_model , list_available_models
@@ -22,7 +22,8 @@ COMMAND_DESCRIPTIONS = {
         "clear":   "清除历史消息，开始新会话",
         "resume":  "恢复历史会话 (不带参数列出可恢复的会话)",
         "tools" :  "列出可用工具",
-        "provider" : "切换提供商 (list/<name>)"
+        "provider" : "切换提供商 (list/<name>)",
+        "notools": "切换工具开关 (on/off)",
 }
 def handle_command(cmd):
     """解析命令并执行相应操作"""
@@ -38,7 +39,8 @@ def handle_command(cmd):
         "clear": lambda:handle_clear_command(),
         "resume": lambda:handle_resume_command(parts),
         "tools": lambda:handle_tools_command(),
-        "provider":lambda:handle_provider_command(parts)
+        "provider":lambda:handle_provider_command(parts),
+        "notools": lambda: handle_notools_command(parts),
     }
     if action in command_handlers:
         return command_handlers[action]()
@@ -151,7 +153,13 @@ def handle_model_command(parts) :
     name = parts[1]
     agent.config = switch_model(name, agent.config)
     print(f"已切换模型: {name} (provider: {agent.config['provider_name']})")
-
+def handle_notools_command(parts):
+    if len(parts) < 2 or parts[1] == "status":
+        print(f"工具调用: {'开启' if agent.tools_enabled else '关闭'}  (/notools on|off)")
+        return
+    agent.tools_enabled = (parts[1] == "on")
+    print(f"工具调用已{'开启' if agent.tools_enabled else '关闭'}")
+        
     
 if __name__ == "__main__":
     agent = Agent(client, config, persona)

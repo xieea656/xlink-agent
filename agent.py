@@ -14,6 +14,7 @@ class Agent:
         self.history = []
         self.last_messages = None
         self._new_session_file()
+        self.tools_enabled = True
     def chat(self, cin):
         
         if MOCK:
@@ -33,9 +34,10 @@ class Agent:
         last_content = ""
         for step in range(MAX_ITER):
             messages = self._build_messages()
+            self._trim_to_budget(messages)
             self.last_messages = messages
             used = self.estimate_tokens(messages)
-            r = self._stream_completion(messages, TOOL_SPECS)
+            r = self._stream_completion(messages, self._active_tools())
             print(f"[step {step+1} | {used} tokens]")
             last_content = r["content"]
             asst = {"role": "assistant", "content": r["content"] or None}
@@ -123,6 +125,36 @@ class Agent:
     def  _append_jsonl(self, obj):
         with open(self.session_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(obj, ensure_ascii=False) + "\n") 
+    def _active_tools(self):
+        if not self.tools_enabled:
+            return None
+        return TOOL_SPECS
+    def _atomic_units(self, history):
+        units = []
+        i = 0
+        while i < len(history):
+            j = i+1
+            if history[i].get("tool_calls"):
+                while j < len(history) and history[j]["role"] == "tool":
+                    j +=1
+                units.append((i,j))
+            else :
+                units.append((i,i+1))
+            i = j
+        return units
+    def _trim_to_budget(self, messages):
+        while self.estimate_tokens(messages) > MAX_TOKENS:
+            units = self._atomic_units(self.history)
+            if len(units) <= 1:
+                break
+            s,e = units[0]
+            if e < len(self.history) and self.history[e]["role"] != "user":
+                k = next((idx for idx in range(1, len(units)) if self.history[units[idx][0]]["role"] == "user"), None)
+                if k is None:
+                    break
+                e = units[k][0]
+            del self.history[s:e]
+            messages[:] = self._build_messages()
     
 
 
