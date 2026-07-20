@@ -1,12 +1,17 @@
 """agent的工具列表与函数集"""
 from rich.console import Console
 import os , json , subprocess , requests
-from config import get_anysearch_key
+from config import resolve_credential
 MAX_OUTPUT_CHARS = 10000
 BASH_TIMEOUT = 30
 console = Console()
 def read_file(path: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     """读文件工具"""
+    real_path = os.path.realpath(os.path.expanduser(path))
+    blacklist = [os.path.expanduser("~/.config/myagent")]
+    for blocked in blacklist:
+        if real_path.startswith(blocked):
+            return f"Error:无权读取此文件"
     if os.path.isdir(path):
         return f"Error:'{path}' 是一个目录,无法读取"
     try:
@@ -67,9 +72,10 @@ def write_file(path: str,content: str) -> str:
 
 ANYSEARCH_ENDPOINT = "https://api.anysearch.com/mcp"
 
-def _call_anysearch(tool_name: str, arguments: dict) -> str:
+def _call_anysearch(tool_name: str, arguments: dict, api_key=None) -> str:
     """调用 AnySearch JSON-RPC API"""
-    api_key = get_anysearch_key()
+    if api_key is None:
+        api_key = resolve_credential("anysearch")
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -93,13 +99,13 @@ def _call_anysearch(tool_name: str, arguments: dict) -> str:
             return item.get("text", "")
     return json.dumps(result, indent=2, ensure_ascii=False)
 
-def search_web(query: str, max_results: int = 5) -> str:
+def search_web(query: str, max_results: int = 5,_credential=None) -> str:
     """搜索网页工具"""
     if max_results < 1:
         max_results = 1
     if max_results > 20:
         max_results = 20
-    return _call_anysearch("search", {"query": query, "max_results": max_results})
+    return _call_anysearch("search", {"query": query, "max_results": max_results}, _credential)
 
 def show_tools() -> str:
     """返回人类可读的工具列表 + 一行说明。"""
@@ -124,9 +130,20 @@ def call_tool_dict(call) -> str :
           return f"Error: invalid JSON for '{name}': {e}"
     return dispatch_tool(name, args)
 def dispatch_tool(name,args):
+    """执行工具：先解析凭证再调用 handler"""
     handler = TOOL_HANDLERS.get(name)
+    spec = None
     if not handler :
         return "Error:未找到工具"
+    for s in TOOL_SPECS:
+        if s["function"]["name"] == name:
+            spec = s
+            break
+    if spec and "credential" in spec:
+        cred_name = spec["credential"]
+        cred_value = resolve_credential(cred_name)
+        if cred_value:
+            args["_credential"] = cred_value
     try:
         return str(handler(**args))
     except Exception as e:
@@ -202,7 +219,8 @@ TOOL_SPECS = [
                     "max_results": {"type": "integer", "description": "返回结果数量，默认5，最大20"}
                 },
                 "required": ["query"]
-            }
+            },
+            "credential": "anysearch"
         }
     },
 ]
@@ -248,7 +266,8 @@ LOW_TOOL_SPECS = [
                     "max_results": {"type": "integer", "description": "返回结果数量，默认5，最大20"}
                 },
                 "required": ["query"]
-            }
+            },
+            "credential": "anysearch"
         }
     },
 ]

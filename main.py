@@ -3,7 +3,7 @@ import os ,readline
 from openai import OpenAI 
 from agent import Agent , MAX_TOKENS
 from persona import load_persona, list_personas
-from config import switch_provider , list_providers ,  switch_model , list_available_models
+from config import switch_provider , list_providers ,  switch_model , list_available_models ,ensure_credentials
 import tools
 from rich.console import Console
 from rich.rule import Rule
@@ -168,6 +168,7 @@ def handle_notools_command(parts):
 def handle_plan_command():
     agent.plan_mode = True
 if __name__ == "__main__":
+    ensure_credentials()
     agent = Agent(client, config, persona)
     while True:
         try:
