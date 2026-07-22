@@ -86,11 +86,11 @@ def handle_debug_command(parts):
               return
           else:
             for i, msg in enumerate(agent.last_messages):
-                role = msg.role
-                preview = str(msg.content)[:80]
-                tokens = len(str(msg.content)) // 4
+                role = msg["role"]
+                preview = str(msg["content"])[:80]
+                tokens = len(str(msg["content"])) // 4
                 console.print(f"[{i}] {role}: {tokens}t | {preview}...")
-            console.print(f"总计: {sum(len(str(m.content))//4 for m in agent.last_messages)} tokens")
+            console.print(f"总计: {sum(len(str(m['content']))//4 for m in agent.last_messages)} tokens")
 def handle_help_command():
     for cmd_name, desc in COMMAND_DESCRIPTIONS.items():
         console.print(f"  /{cmd_name}  {desc}")    
@@ -230,6 +230,10 @@ if __name__ == "__main__":
                 continue
             if agent.plan_mode:
                 if cin.lower() in ("yes", "y"):
+                    for i in range(len(agent.history) - 1, -1, -1):
+                        if agent.history[i].role == "assistant" and agent.history[i].content:
+                            agent.plan_text = agent.history[i].content
+                            break
                     agent.plan_mode=False
                     agent.tools_enabled = True
                 elif cin.lower() in ("no", "n") or not cin.strip():

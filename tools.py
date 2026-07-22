@@ -474,6 +474,46 @@ TOOL_SPECS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "remember",
+            "description": "管理工作记忆。工作记忆不会被压缩，AI 可写入、删除、列出事实。用于记录重要结论、偏好、待办，供后续对话参考",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string", "enum": ["add", "remove", "list", "clear"],
+                        "description": "add=写入, remove=删除, list=列出, clear=清空"
+                    },
+                    "fact": {"type": "string", "description": "事实内容（add/remove 时必填）"},
+                    "importance": {"type": "string", "enum": ["high", "medium", "low"], "description": "重要性（add 时可选，默认 medium）"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "store_tool_result",
+            "description": "存储重要工具调用的完整回复到工具存储区。与工作记忆独立，不会被压缩。提供 log_ref 时 Agent 自动读取，无需手动传 content",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string", "enum": ["store", "remove", "list", "clear"],
+                        "description": "store=存储, remove=删除, list=列出所有键, clear=清空"
+                    },
+                    "key": {"type": "string", "description": "存储键名（store/remove 时必填）"},
+                    "content": {"type": "string", "description": "要存储的内容（store 时可选，提供 log_ref 时自动填充）"},
+                    "log_ref": {"type": "string", "description": "日志引用，如 2026-07-22:15。提供后 Agent 自动读取内容，无需 AI 手动传 content"},
+                    "source": {"type": "string", "description": "来源描述，如 read_log_line: 2026-07-22:15"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
 ]
 
 LOW_TOOL_SPECS = [
