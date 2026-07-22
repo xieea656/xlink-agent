@@ -1,13 +1,14 @@
 """agent的工具列表与函数集"""
 from rich.console import Console
-import os , json , subprocess , requests
-import re
+import os , json , subprocess , requests ,re ,datetime
+from zoneinfo import ZoneInfo, available_timezones
 from config import resolve_credential, load_all_credentials
 MAX_OUTPUT_CHARS = 10000
 BASH_TIMEOUT = 30
 console = Console()
 def read_file(path: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     """读文件工具"""
+    console.print(f"\n[tool: read_file] 读取: {path}")
     real_path = os.path.realpath(os.path.expanduser(path))
     blacklist = [os.path.expanduser("~/.config/myagent")]
     for blocked in blacklist:
@@ -26,7 +27,14 @@ def read_file(path: str, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     except OSError as e:
         return f"Error:读取文件 '{path}' 时发生错误: {e}"
     if b"\x00" in raw:
-        return f"Error:'{path}' 是二进制文件,无法读取"
+        ext = os.path.splitext(path)[1].lower()
+        MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp",
+                          ".mp4", ".avi", ".mov", ".mkv", ".webm",
+                          ".mp3", ".wav", ".flac", ".ogg", ".m4a"}  
+        if ext in MEDIA_EXTENSIONS:
+            return _media_metadata(real_path)
+        else:
+            return f"[binary file: {len(raw)} bytes, 文件: {os.path.basename(path)}]"
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -181,14 +189,46 @@ def dispatch_tool(name,args):
         cred_value = resolve_credential(cred_name)
         if cred_value:
             args["_credential"] = cred_value
-    perm = _check_permission(name, args)
-    if perm["decision"] == "deny":
-        return f"权限拒绝：{perm['reason']}"
+    if name == "run_bash":
+        risk = classify(name, args)
+        if risk == "high":
+            return f"权限拒绝：高危拦截"
+    else:
+        perm = _check_permission(name, args)
+        if perm["decision"] == "deny":
+            return f"权限拒绝：{perm['reason']}"
     try:
         return str(handler(**args))
     except Exception as e:
         return f"Error: {type(e).__name__}: {e}"
-
+def _media_metadata(path):
+    size = os.path.getsize(path)
+    size_str = f"{size/1024:.0f}KB" if size < 1024*1024 else f"{size/1024/1024:.1f}MB"
+    result = subprocess.run(["file", "-b", path], capture_output=True, text=True,env={"LC_ALL": "C"})
+    file_info = result.stdout.strip()
+    duration = ""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "quiet", "-show_entries",
+            "format=duration", "-of", "csv=p=0", path],
+        capture_output=True, text=True, timeout=10)
+        if r.stdout.strip():
+            secs = float(r.stdout.strip())
+            duration = f", {secs:.0f}s" if secs < 60 else f", {secs/60:.0f}m{secs%60:.0f}s"
+    except : pass
+    return f"[media: {file_info}{duration}, {size_str}, 文件:{os.path.basename(path)}]"
+def timezone_convert(to_tz, from_tz="Asia/Shanghai", time_str=None):
+    if time_str is None:
+        dt = datetime.datetime.now()
+    else:
+        dt = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+    dt = dt.replace(tzinfo=ZoneInfo(from_tz))
+    target = dt.astimezone(ZoneInfo(to_tz))
+    return target.strftime("%Y-%m-%d %H:%M:%S %Z")
+def timezone_list(query=None):
+    timezones = sorted(available_timezones())
+    if query:
+        timezones = [t for t in timezones if query.lower() in t.lower()]
+    return "\n".join(timezones[:50])
 TOOL_SPECS = [
     {
         "type": "function",
@@ -263,6 +303,35 @@ TOOL_SPECS = [
             "credential": "anysearch"
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "timezone_convert",
+            "description": "时区转换。把时间从一个时区转到另一个时区。不传 time_str 则用当前时间",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to_tz": {"type": "string", "description": "目标时区，如 America/New_York"},
+                    "from_tz": {"type": "string", "description": "源时区，默认 Asia/Shanghai"},
+                    "time_str": {"type": "string", "description": "要转换的时间，格式 YYYY-MM-DD HH:MM，不传则用当前时间"}
+                },
+                "required": ["to_tz"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "timezone_list",
+            "description": "列出可用时区，可选按关键词筛选",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "筛选关键词，如 Asia、America"}
+                }
+            }
+        }
+    },
 ]
 
 LOW_TOOL_SPECS = [
@@ -310,6 +379,35 @@ LOW_TOOL_SPECS = [
             "credential": "anysearch"
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "timezone_convert",
+            "description": "时区转换。把时间从一个时区转到另一个时区。不传 time_str 则用当前时间",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to_tz": {"type": "string", "description": "目标时区，如 America/New_York"},
+                    "from_tz": {"type": "string", "description": "源时区，默认 Asia/Shanghai"},
+                    "time_str": {"type": "string", "description": "要转换的时间，格式 YYYY-MM-DD HH:MM，不传则用当前时间"}
+                },
+                "required": ["to_tz"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "timezone_list",
+            "description": "列出可用时区，可选按关键词筛选",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "筛选关键词，如 Asia、America"}
+                }
+            }
+        }
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -317,4 +415,6 @@ TOOL_HANDLERS = {
     "run_bash": run_bash,
     "write_file": write_file,
     "search_web": search_web,
+    "timezone_convert": timezone_convert,
+    "timezone_list": timezone_list,
 }
