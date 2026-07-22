@@ -216,6 +216,7 @@ if __name__ == "__main__":
     agent = Agent(client, config, persona)
     agent.events.on("text_delta", lambda d: console.print(d["text"], end=""))
     agent.events.on("reasoning_delta", lambda d: console.print(d["text"], end=""))
+    agent.events.on("tool_result", lambda d: console.print(f"\n[tool: {d['name']}] {d['result'][:200]}{'...' if len(d['result']) > 200 else ''}"))
     agent.events.on("step_start", lambda d: console.print(f"[step {d['step']} | {d['tokens']} tokens]"))
     agent.events.on("max_iter", lambda d: console.print(f"\n[!] 达到最大迭代次数 {d['max_iter']},回答可能不完整。"))
     session = PromptSession(bottom_toolbar=toolbar, style=Style.from_dict({"bottom-toolbar": "noreverse"}))

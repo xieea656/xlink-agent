@@ -3,6 +3,7 @@ from rich.console import Console
 import os , json , subprocess , requests ,re ,datetime
 from zoneinfo import ZoneInfo, available_timezones
 from config import resolve_credential, load_all_credentials
+from log import read_line
 MAX_OUTPUT_CHARS = 10000
 BASH_TIMEOUT = 30
 console = Console()
@@ -231,6 +232,83 @@ def timezone_list(query=None):
     if query:
         timezones = [t for t in timezones if query.lower() in t.lower()]
     return "\n".join(timezones[:50])
+def read_log_line(log_ref, start_line=None, end_line=None):
+    """按 log 引用读工具日志全文。log_ref 格式: 2026-07-22:15 或 log:2026-07-22:15"""
+    try:
+        parts = log_ref.replace("log:", "").split(":")
+        date, line_num = parts[0], parts[1]
+        entry = read_line(date, int(line_num), start_line, end_line)
+        if entry:
+            return json.dumps(entry, ensure_ascii=False, indent=2)
+        return "Error: 未找到日志记录"
+    except Exception as e:
+        return f"Error: 读取日志失败: {e}"
+
+def edit_file(path: str, old_string: str, new_string: str) -> str:
+    """在文件中搜索 old_string 并替换为 new_string（精确匹配，只替换第一次出现）"""
+    real_path = os.path.realpath(os.path.expanduser(path))
+    if os.path.basename(real_path) == ".env":
+        return "Error: 无权编辑此文件"
+    try:
+        with open(real_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return f"Error: 文件 '{path}' 不存在"
+    except Exception as e:
+        return f"Error: 读取文件失败: {e}"
+    if old_string not in content:
+        return "Error: 未找到匹配的 old_string"
+    new_content = content.replace(old_string, new_string, 1)
+    with open(real_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    return f"已替换 1 处: {path}"
+
+def search_files(pattern: str, path: str = ".", glob: str = None) -> str:
+    """在目录中搜索匹配 pattern 的文本内容（grep 包装）"""
+    real_path = os.path.realpath(os.path.expanduser(path))
+    cmd = ["grep", "-n", "--color=never", "-r", pattern, real_path]
+    if glob:
+        cmd.extend(["--include", glob])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return "Error: 搜索超时"
+    if result.returncode != 0 and not result.stdout:
+        return "(无匹配)"
+    output = result.stdout or ""
+    if len(output) > 5000:
+        output = output[:5000] + f"\n\n[truncated - 显示了 5000 / 共 {len(output)} 字符]"
+    return output
+
+def list_files(path: str = ".", pattern: str = None) -> str:
+    """列出目录下的文件和子目录，可选 glob 模式过滤"""
+    real_path = os.path.realpath(os.path.expanduser(path))
+    if not os.path.isdir(real_path):
+        return f"Error: '{path}' 不是目录"
+    import glob as glob_mod
+    if pattern:
+        matches = glob_mod.glob(os.path.join(real_path, pattern), recursive=True)
+        base = real_path
+    else:
+        try:
+            matches = [os.path.join(real_path, f) for f in os.listdir(real_path)]
+        except PermissionError:
+            return f"Error: 没有权限读取目录 '{path}'"
+        base = real_path
+    lines = []
+    for f in sorted(matches):
+        if os.path.isdir(f):
+            lines.append(os.path.relpath(f, base) + "/")
+        else:
+            try:
+                size = os.path.getsize(f)
+                lines.append(f"{os.path.relpath(f, base)}  ({size} bytes)")
+            except OSError:
+                lines.append(os.path.relpath(f, base) + "  (?)")
+    if len(lines) > 200:
+        lines = lines[:200] + [f"... 还有 {len(lines)-200} 项"]
+    return "\n".join(lines)
+
 TOOL_SPECS = [
     {
         "type": "function",
@@ -334,6 +412,68 @@ TOOL_SPECS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_log_line",
+            "description": "按 log 引用读取工具调用的完整结果。工具结果以 L2 简略格式返回时，用此工具取全文。log_ref 格式见 L2 结果中的 log:日期:行号",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "log_ref": {"type": "string", "description": "日志引用，格式 日期:行号，如 2026-07-22:15"},
+                    "start_line": {"type": "integer", "description": "可选，起始行号（从1开始）"},
+                    "end_line": {"type": "integer", "description": "可选，结束行号"}
+                },
+                "required": ["log_ref"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "在文件中搜索 old_string 并替换为 new_string，精确匹配，只替换第一次出现",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径"},
+                    "old_string": {"type": "string", "description": "要替换的原文（精确匹配）"},
+                    "new_string": {"type": "string", "description": "替换后的新内容"}
+                },
+                "required": ["path", "old_string", "new_string"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "在目录中搜索匹配 pattern 的文本内容（grep 包装）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "搜索关键词或正则"},
+                    "path": {"type": "string", "description": "搜索目录，默认当前目录"},
+                    "glob": {"type": "string", "description": "文件类型过滤，如 *.py"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "列出目录下的文件和子目录，可选 glob 模式过滤",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "目录路径，默认当前目录"},
+                    "pattern": {"type": "string", "description": "glob 过滤模式，如 *.py、**/*.md"}
+                }
+            }
+        }
+    },
 ]
 
 LOW_TOOL_SPECS = [
@@ -410,6 +550,52 @@ LOW_TOOL_SPECS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_log_line",
+            "description": "按 log 引用读取工具调用的完整结果。工具结果以 L2 简略格式返回时，用此工具取全文。log_ref 格式见 L2 结果中的 log:日期:行号",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "log_ref": {"type": "string", "description": "日志引用，格式 日期:行号，如 2026-07-22:15"},
+                    "start_line": {"type": "integer", "description": "可选，起始行号（从1开始）"},
+                    "end_line": {"type": "integer", "description": "可选，结束行号"}
+                },
+                "required": ["log_ref"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "在目录中搜索匹配 pattern 的文本内容（grep 包装）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string", "description": "搜索关键词或正则"},
+                    "path": {"type": "string", "description": "搜索目录，默认当前目录"},
+                    "glob": {"type": "string", "description": "文件类型过滤，如 *.py"}
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "列出目录下的文件和子目录，可选 glob 模式过滤",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "目录路径，默认当前目录"},
+                    "pattern": {"type": "string", "description": "glob 过滤模式，如 *.py、**/*.md"}
+                }
+            }
+        }
+    },
 ]
 
 TOOL_HANDLERS = {
@@ -419,4 +605,8 @@ TOOL_HANDLERS = {
     "search_web": search_web,
     "timezone_convert": timezone_convert,
     "timezone_list": timezone_list,
+    "read_log_line": read_log_line,
+    "edit_file": edit_file,
+    "search_files": search_files,
+    "list_files": list_files,
 }

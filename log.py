@@ -13,7 +13,14 @@ def log_tool_call(name , args, result ,status):
     with open(path, "a", encoding="utf-8") as f:
         line_num = sum(1 for _ in open(path, "r", encoding="utf-8")) + 1
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return line_num
+    date = datetime.datetime.now().strftime("%Y-%m-%d")
+    return date , line_num
+def l2_summary(name, result, status, date, line_num):
+    lines = result.splitlines()
+    preview = lines[0][:60] if lines else "(空)"
+    extra = len(lines) - 1
+    icon = "✓" if status == "success" else "✗"
+    return f"[{name} {icon} | {preview} | +{extra}行 log:{date}:{line_num}]"
 def read_tool_log(name):
     """读工具日志"""
     path = f"logs/{name}_tools.jsonl"

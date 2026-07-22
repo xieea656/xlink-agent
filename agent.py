@@ -1,13 +1,15 @@
 from config import get_config
 from openai import OpenAI
-from system_prompt import SYSTEM_PROMPT ,PLAN_PROMPT
+from system_prompt import SYSTEM_PROMPT ,PLAN_PROMPT ,COMPRESS_SYSTEM,COMPRESS_PROMPT
 import datetime, os, platform , json ,tiktoken
 from tools import TOOL_SPECS, call_tool_dict,LOW_TOOL_SPECS ,TOOL_HANDLERS
-from log import log_tool_call
+from log import log_tool_call, l2_summary
 from events import EventBus
 from message import AgentMessage 
 _enc = tiktoken.get_encoding("cl100k_base")
 MAX_ITER = 25
+COMPRESS_RESERVE_ROUNDS = 4
+COMPRESS_TRIGGER_RATIO = 0.8
 class Agent:
     def __init__(self, client, config,persona):
         self.client = client
@@ -20,6 +22,7 @@ class Agent:
         self.plan_mode = False
         self._trim_budget = config["context_window"] * 0.8
         self.events = EventBus()
+        self.compressed = []
     def chat(self, cin):
         user_msg = AgentMessage(role="user", content=cin)
         self.history.append(user_msg)
@@ -27,7 +30,6 @@ class Agent:
         last_content = ""
         for step in range(MAX_ITER):
             messages = self._build_messages()
-            self._trim_to_budget(messages)
             self.last_messages = messages
             used = self.estimate_tokens(messages)
             self.events.emit("step_start",step=step+1, tokens=used)
@@ -37,6 +39,7 @@ class Agent:
             self.history.append(asst)
             self._append_jsonl(asst)
             if not r["tool_calls"]:
+                self._compress()
                 self.events.emit("response_done", content=last_content)
                 return last_content
             for call in r["tool_calls"]:
@@ -45,14 +48,19 @@ class Agent:
                     continue
                 self.events.emit("tool_call", name=call["function"]["name"], args=json.loads(call["function"]["arguments"]))
                 result = call_tool_dict(call)
-                self.events.emit("tool_result", name=call["function"]["name"], status="error" if result.startswith("Error:") else "success", result=result)
-                tool_msg = AgentMessage(role="tool", tool_call_id=call["id"], content=result) 
-                log_tool_call(
+                status = "error" if result.startswith("Error:") else "success"
+                self.events.emit("tool_result", name=call["function"]["name"], status=status, result=result)
+                date, ln = log_tool_call(
                     name = call["function"]["name"],
                     args = json.loads(call["function"]["arguments"]),
                     result = result,
-                    status= "error" if result.startswith("Error:") else "success",
+                    status= status,
                 )
+                l2 = l2_summary(call["function"]["name"], result, status, date, ln)
+                if len(result) < 500 or call["function"]["name"] == "read_log_line":
+                    tool_msg = AgentMessage(role="tool", tool_call_id=call["id"], content=result)
+                else:
+                    tool_msg = AgentMessage(role="tool", tool_call_id=call["id"], content=l2)
                 self.history.append(tool_msg)
                 self._append_jsonl(tool_msg)
         self.events.emit("max_iter", max_iter=25)
@@ -120,14 +128,16 @@ class Agent:
             ]
         return {"content": content, "tool_calls": tool_calls}
     def _build_messages(self):
-        messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "system", "content": self.persona["system_prompt"]},
-                *[m.to_llm() for m in self.history],
-                {"role": "system", "content": self.get_env_info()},
-            ]
+        messages = [
+          {"role": "system", "content": SYSTEM_PROMPT},               
+          {"role": "system", "content": self.persona["system_prompt"]},
+        ]
         if self.plan_mode:
-            messages.insert(2, {"role": "system", "content": PLAN_PROMPT})
+          messages.append({"role": "system", "content": PLAN_PROMPT})
+        for m in self.compressed:                                       
+            messages.append({"role": "system", "content": m.content})
+        messages += [m.to_llm() for m in self.history]                 
+        messages.append({"role": "system", "content": self.get_env_info()})
         return messages
     def  _append_jsonl(self, msg):
         with open(self.session_file, "a", encoding="utf-8") as f:
@@ -151,21 +161,35 @@ class Agent:
                 units.append((i,i+1))
             i = j
         return units
-    def _trim_to_budget(self, messages):
-        while self.estimate_tokens(self.history) > self._trim_budget:
-            units = self._atomic_units(self.history)
-            if len(units) <= 1:
-                break
-            removed = False
-            for i, (s, e) in enumerate(units):
-                if i == 0:
-                    remaining = self.history[e:]
-                else:
-                    remaining = self.history[:s] + self.history[e:]
-                if any(msg.role == "user" for msg in remaining):
-                    self.history = remaining
-                    removed = True
-                    break
-            if not removed:
-                break
-            messages[:] = self._build_messages()
+    def _assemble_compress_content(self, units):
+        parts = []
+        for m in self.compressed:
+            parts.append(f"[压缩摘要]\n{m.content}")
+        for s, e in units:
+            for msg in self.history[s:e]:
+                parts.append(f"[{msg.role}]\n{msg.content}")
+        return "\n\n".join(parts)
+    def _compress(self):
+        total = self.estimate_tokens(self.history) + self.estimate_tokens(self.compressed)
+        if total < COMPRESS_TRIGGER_RATIO * self._trim_budget:
+            return
+        units = self._atomic_units(self.history)
+        if len(units) <= COMPRESS_RESERVE_ROUNDS + 1:
+            return
+        to_compress = self._assemble_compress_content(units[:-COMPRESS_RESERVE_ROUNDS])
+        target = max(5000, len(_enc.encode(to_compress)) // 5)
+        summary = self._compress_request(to_compress, target)
+        self.compressed.append(AgentMessage(role="compressed", content=summary))
+        cut = units[-COMPRESS_RESERVE_ROUNDS][0]
+        self.history = self.history[cut:]
+    def _compress_request(self, content, target):
+        resp = self.client.chat.completions.create(
+          model=self.config["Model"],
+          messages=[
+                {"role": "system", "content": COMPRESS_SYSTEM},
+                {"role": "user", "content": COMPRESS_PROMPT.format(content=content, target=target)}
+            ],
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content
+                
