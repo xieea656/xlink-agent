@@ -100,7 +100,7 @@ def handle_status_command():
     console.print(f"当前人格: {agent.persona['name']}")
     console.print(f"当前provider: {agent.config['provider_name']}")
     console.print(f"模型： {agent.config['Model']}")
-    context_tokens = sum(len(str(m.get("content", ""))) // 4 for m in agent.history)
+    context_tokens = agent.estimate_tokens(agent.history)
     console.print(f"{context_tokens} / {agent._trim_budget} max tokens")
     console.print(f"历史消息: {len(agent.history)} 条")
     console.print(f"当前工作目录: {os.getcwd()}")
