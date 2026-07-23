@@ -9,3 +9,11 @@ sessions/
 *.swo
 .DS_Store
 test_features.py
+.xlink/memory.db
+.xlink/memory.db-shm
+.xlink/memory.db-wal
+.xlink/sessions/
+.xlink/logs/
+.xlink/.env
+
+.xlink/compressed/

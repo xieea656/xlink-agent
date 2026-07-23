@@ -274,8 +274,17 @@ class Agent:
             return
         to_compress = self._assemble_compress_content(units[:-self.compress_reserve_rounds])
         target = max(5000, len(_enc.encode(to_compress)) // 5)
-        summary = self._compress_request(to_compress, target)
-        self.compressed.append(AgentMessage(role="compressed", content=summary))
+        episode, memories, user_msgs = self._compress_request(to_compress, target)
+        # ① episode → ④ 压缩上下文
+        self.compressed.append(AgentMessage(role="compressed", content=episode))
+        # ② memory → .xlink/memory/
+        if memories:
+            for item in memories:
+                self._write_compressed_memory(item)
+            self._sync_memory_index()
+        # ③ user → .xlink/compressed/users/
+        if user_msgs:
+            self._save_compressed_users(user_msgs)
         cut = units[-self.compress_reserve_rounds][0]
         keep = [m for m in self.history[:cut] if m.id in self.protected_ids]
         self.history = keep + self.history[cut:]
@@ -288,7 +297,73 @@ class Agent:
             ],
             temperature=0.3,
         )
-        return resp.choices[0].message.content
+        raw = resp.choices[0].message.content
+        return self._parse_compressed_response(raw)
+    def _parse_compressed_response(self, raw):
+        episode = ""
+        memory_items = []
+        user_messages = ""
+        current = None
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if stripped == "=== EPISODE ===":
+                current = "episode"
+            elif stripped == "=== MEMORY ===":
+                current = "memory"
+            elif stripped == "=== USER_MESSAGES ===":
+                current = "user"
+            elif current == "episode":
+                episode += line + "\n"
+            elif current == "memory":
+                if stripped.startswith("- [name:"):
+                    memory_items.append(stripped)
+            elif current == "user":
+                user_messages += line + "\n"
+        # 容错：没找到标记时整段当 episode
+        if not episode and not memory_items and not user_messages:
+            episode = raw
+        return episode.strip(), memory_items, user_messages.strip()
+
+    def _parse_memory_item(self, line):
+        name = ""
+        content = ""
+        type_ = "reference"
+        desc = ""
+        # 格式: - [name: 记忆名] 内容 | type: 类型 | desc: 描述
+        line = line.lstrip("- ")
+        if line.startswith("[name:"):
+            end = line.find("]")
+            if end > 0:
+                name = line[6:end].strip()
+                rest = line[end+1:].strip()
+                parts = rest.split(" | ")
+                if parts:
+                    content = parts[0]
+                for p in parts[1:]:
+                    if p.startswith("type:"):
+                        type_ = p[5:].strip()
+                    elif p.startswith("desc:"):
+                        desc = p[5:].strip()
+        return name, content, type_, desc
+
+    def _write_compressed_memory(self, item):
+        name, content, type_, desc = self._parse_memory_item(item)
+        if not name or not content:
+            return
+        fpath = os.path.join(self.memory_dir, f"{name}.md")
+        frontmatter = f"---\nname: {name}\ndescription: {desc}\nmetadata:\n  type: {type_}\n  source: compressed\n---\n\n"
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(frontmatter + content)
+
+    def _save_compressed_users(self, text):
+        date = datetime.datetime.now().strftime("%Y-%m-%d")
+        time_str = datetime.datetime.now().strftime("%H:%M")
+        save_dir = os.path.join(".xlink", "compressed", "users")
+        os.makedirs(save_dir, exist_ok=True)
+        fpath = os.path.join(save_dir, f"{date}.md")
+        with open(fpath, "a", encoding="utf-8") as f:
+            f.write(f"\n## {time_str}\n\n{text}\n")
+
     def _handle_remember(self, call):
         args = json.loads(call["function"]["arguments"])
         action = args.get("action", "add")
